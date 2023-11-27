@@ -130,5 +130,5 @@ dist
 .pnp.*
 
 ## Hide these so they do not get committed.
-.csv
-.txt
+*.csv
+*.txt
