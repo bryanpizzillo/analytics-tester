@@ -30,6 +30,25 @@ const getScriptsFromPage = async (url) => {
   try {
     const page = await browser.newPage();
 
+    // Add Google analytics interceptor to try and figure out what GA analytics
+    // other than DAP are on the page.
+    await page.setRequestInterception(true);
+
+    const googleAnalyticsCalls = [];
+
+    page.on('request', req => {
+        const requestURL = req.url();
+        if (requestURL.indexOf("google-analytics.com/collect") > -1) {
+          googleAnalyticsCalls.push(requestURL);
+          req.abort();
+        } else if (requestURL.indexOf("google-analytics.com/g/collect") > -1) {
+          googleAnalyticsCalls.push(requestURL);
+          req.abort();
+        } else {
+          req.continue();
+        }
+    });
+
     // Navigate the page to a URL; wait until there have been no
     // more than 2 network requests for the last 500ms. This should
     // allow additional scripts to run.
@@ -49,6 +68,7 @@ const getScriptsFromPage = async (url) => {
       requestedUrl: url,
       finalUrl: redirects.length > 0 ? redirects[redirects.length-1] : url,
       scripts,
+      googleAnalyticsCalls,
     }
   } finally {
     // Wow, I get to use a finally in JS??
@@ -130,6 +150,39 @@ const getLaunchInfo = async (scripts) => {
 };
 
 /**
+ * Analyzes GA Network requests to figure out what is going on.
+ *
+ * @param {*} googleAnalyticsCalls 
+ */
+const getGAInfo = (googleAnalyticsCalls) => {
+  if (googleAnalyticsCalls.length > 0) {
+
+    // Calls can be for Universal Analytics (/collect) and GA4 (g/collect)
+    const urls = googleAnalyticsCalls.map( req => new URL(req));
+
+    // Good non-dap TIDs (the google tracking id)
+    const tids = [
+      ...new Set(urls
+        .map(url => url.searchParams.get('tid'))
+        .filter(tid => tid && (
+          tid !== 'G-CSLL4ZEK4L' &&
+          tid !== 'UA-33523145-1'
+          )
+        )
+      )
+    ];
+
+    return {
+      googleAnalyticsTIDs: tids.join('|'),
+    };
+  } else {
+    return {
+      googleAnalyticsTIDs: null,
+    };
+  } 
+}
+
+/**
  * Determines if the site has DAP loaded.
  *
  * @param {*} scripts 
@@ -209,7 +262,8 @@ const processPage = (recordProcessor) => async (url) => {
     const {
       requestedUrl,
       finalUrl,
-      scripts
+      scripts,
+      googleAnalyticsCalls,
     } = await getScriptsFromPage(url);
 
     const launchInfo = await getLaunchInfo(scripts);
@@ -222,6 +276,7 @@ const processPage = (recordProcessor) => async (url) => {
       ...launchInfo,
       hasDap: hasDap(scripts),
       ...getDapInfo(scripts),
+      ...getGAInfo(googleAnalyticsCalls),
       hasLaunchAdobeAnalytics: hasLaunchAdobeAnalytics(scripts),
       hasStaticAdobeAnalytics: hasStaticAdobeAnalytics(scripts),
       hasSelfHostedAdobeAnalytics: hasSelfHostedAdobeAnalytics(scripts),
@@ -232,7 +287,7 @@ const processPage = (recordProcessor) => async (url) => {
     return record;
   } catch (err) {
     process.stderr.write(`Finished Processing ${url} with Error.\n`);
-    console.log(err);
+    console.error(err);
     const record = {
       requestedUrl: url,
       errorMsg: err.message,
@@ -251,7 +306,7 @@ const program = async (urls, outputStream) => {
     'requestedUrl', 'finalUrl', 'launchIsLegacyDTM', 'launchOrgId', 'launchPropertyId',
     'launchEnvironmentId', 'launchIsProduction', 'launchIsMinified', 'hasDap', 'dapAgency',
     'dapSubAgency', 'hasLaunchAdobeAnalytics', 'hasStaticAdobeAnalytics',
-    'hasSelfHostedAdobeAnalytics', 'errorMsg',
+    'hasSelfHostedAdobeAnalytics', 'googleAnalyticsTIDs', 'errorMsg',
   ];
 
   outputStream.write(headers.join(',') + '\n');
